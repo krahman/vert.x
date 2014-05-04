@@ -30,7 +30,7 @@ import org.vertx.java.core.VoidHandler;
 import org.vertx.java.core.buffer.Buffer;
 import org.vertx.java.core.http.*;
 import org.vertx.java.core.http.impl.ws.DefaultWebSocketFrame;
-import org.vertx.java.core.http.impl.ws.WebSocketFrame;
+import org.vertx.java.core.http.impl.ws.WebSocketFrameInternal;
 import org.vertx.java.core.impl.Closeable;
 import org.vertx.java.core.impl.DefaultContext;
 import org.vertx.java.core.impl.DefaultFutureResult;
@@ -45,6 +45,7 @@ import javax.net.ssl.SSLParameters;
 import java.net.InetSocketAddress;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 public class DefaultHttpClient implements HttpClient {
@@ -162,14 +163,20 @@ public class DefaultHttpClient implements HttpClient {
 
   @Override
   public HttpClient connectWebsocket(final String uri, final WebSocketVersion wsVersion, final MultiMap headers, final Handler<WebSocket> wsConnect) {
+    connectWebsocket(uri, wsVersion, headers, null, wsConnect);
+    return this;
+  }
+
+  @Override
+  public HttpClient connectWebsocket(final String uri, final WebSocketVersion wsVersion, final MultiMap headers, final Set<String> subprotocols, final Handler<WebSocket> wsConnect) {
     checkClosed();
     configurable = false;
     getConnection(new Handler<ClientConnection>() {
       public void handle(final ClientConnection conn) {
         if (!conn.isClosed()) {
-          conn.toWebSocket(uri, wsVersion, headers, maxWebSocketFrameSize, wsConnect);
+          conn.toWebSocket(uri, wsVersion, headers, maxWebSocketFrameSize, subprotocols, wsConnect);
         } else {
-          connectWebsocket(uri, wsVersion, headers, wsConnect);
+          connectWebsocket(uri, wsVersion, headers, subprotocols, wsConnect);
         }
       }
     }, exceptionHandler, actualCtx);
@@ -798,10 +805,11 @@ public class DefaultHttpClient implements HttpClient {
           conn.handleResponseEnd((LastHttpContent)chunk);
         }
         valid = true;
-      } else if (msg instanceof WebSocketFrame) {
-        WebSocketFrame frame = (WebSocketFrame) msg;
-        switch (frame.getType()) {
+      } else if (msg instanceof WebSocketFrameInternal) {
+        WebSocketFrameInternal frame = (WebSocketFrameInternal) msg;
+        switch (frame.type()) {
           case BINARY:
+          case CONTINUATION:
           case TEXT:
             conn.handleWsFrame(frame);
             break;

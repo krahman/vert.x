@@ -16,6 +16,7 @@
 
 package vertx.tests.core.websockets;
 
+import com.sun.org.apache.xpath.internal.operations.Mult;
 import org.vertx.java.core.*;
 import org.vertx.java.core.buffer.Buffer;
 import org.vertx.java.core.http.*;
@@ -25,6 +26,7 @@ import org.vertx.java.testframework.TestClientBase;
 import org.vertx.java.testframework.TestUtils;
 
 import java.security.MessageDigest;
+import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -102,6 +104,38 @@ public class WebsocketsTestClient extends TestClientBase {
     testWriteFromConnectHandler(WebSocketVersion.RFC6455);
   }
 
+  public void testContinuationWriteFromConnectHybi08() throws Exception {
+    testContinuationWriteFromConnectHandler(WebSocketVersion.HYBI_08);
+  }
+
+  public void testContinuationWriteFromConnectHybi17() throws Exception {
+    testContinuationWriteFromConnectHandler(WebSocketVersion.RFC6455);
+  }
+
+  public void testValidSubProtocolHybi00() throws Exception {
+    testValidSubProtocol(WebSocketVersion.HYBI_00);
+  }
+
+  public void testValidSubProtocolHybi08() throws Exception {
+    testValidSubProtocol(WebSocketVersion.HYBI_08);
+  }
+
+  public void testValidSubProtocolHybi17() throws Exception {
+    testValidSubProtocol(WebSocketVersion.RFC6455);
+  }
+
+  public void testInvalidSubProtocolHybi00() throws Exception {
+    testInvalidSubProtocol(WebSocketVersion.HYBI_00);
+  }
+
+  public void testInvalidSubProtocolHybi08() throws Exception {
+    testInvalidSubProtocol(WebSocketVersion.HYBI_08);
+  }
+
+  public void testInvalidSubProtocolHybi17() throws Exception {
+    testInvalidSubProtocol(WebSocketVersion.RFC6455);
+  }
+
   // TODO close and exception tests
   // TODO pause/resume/drain tests
   // TODO websockets over HTTPS tests
@@ -118,6 +152,23 @@ public class WebsocketsTestClient extends TestClientBase {
     }
   }
 
+
+  private NetSocket getUpgradedNetSocket(HttpServerRequest req, String path) {
+    tu.checkThread();
+    tu.azzert(path.equals(req.path()));
+    tu.azzert("Upgrade".equals(req.headers().get("Connection")));
+    NetSocket sock = req.netSocket();
+    String secHeader = req.headers().get("Sec-WebSocket-Key");
+    String tmp = secHeader + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+    String encoded = sha1(tmp);
+    sock.write("HTTP/1.1 101 Web Socket Protocol Handshake\r\n" +
+            "Upgrade: WebSocket\r\n" +
+            "Connection: Upgrade\r\n" +
+            "Sec-WebSocket-Accept: " + encoded + "\r\n" +
+            "\r\n");
+    return sock;
+  }
+
   // Let's manually handle the websocket handshake and write a frame to the client
   public void testHandleWSManually() throws Exception {
     final String path = "/some/path";
@@ -126,18 +177,7 @@ public class WebsocketsTestClient extends TestClientBase {
 
     server = vertx.createHttpServer().requestHandler(new Handler<HttpServerRequest>() {
       public void handle(final HttpServerRequest req) {
-        tu.checkThread();
-        tu.azzert(path.equals(req.path()));
-        tu.azzert("Upgrade".equals(req.headers().get("Connection")));
-        NetSocket sock = req.netSocket();
-        String secHeader = req.headers().get("Sec-WebSocket-Key");
-        String tmp = secHeader + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-        String encoded = sha1(tmp);
-        sock.write("HTTP/1.1 101 Web Socket Protocol Handshake\r\n" +
-                   "Upgrade: WebSocket\r\n" +
-                   "Connection: Upgrade\r\n" +
-                   "Sec-WebSocket-Accept: " + encoded + "\r\n" +
-                   "\r\n");
+        NetSocket sock = getUpgradedNetSocket(req, path);
         // Let's write a Text frame raw
         Buffer buff = new Buffer();
         buff.appendByte((byte)129); // Text frame
@@ -194,7 +234,6 @@ public class WebsocketsTestClient extends TestClientBase {
           }
         });
       }
-
     });
     server.listen(8080, "localhost", new AsyncResultHandler<HttpServer>() {
       @Override
@@ -229,6 +268,60 @@ public class WebsocketsTestClient extends TestClientBase {
                  sent.appendBuffer(new Buffer(str, "UTF-8"));
                }
              }
+          }
+        });
+      }
+    });
+  }
+
+  private void testContinuationWriteFromConnectHandler(final WebSocketVersion version) throws Exception {
+    final String path = "/some/path";
+    final String firstFrame = "AAA";
+    final String continuationFrame = "BBB";
+
+    server = vertx.createHttpServer().requestHandler(new Handler<HttpServerRequest>() {
+      public void handle(final HttpServerRequest req) {
+        NetSocket sock = getUpgradedNetSocket(req, path);
+
+        // Let's write a Text frame raw
+        Buffer buff = new Buffer();
+        buff.appendByte((byte) 0x01); // Incomplete Text frame
+        buff.appendByte((byte) firstFrame.length());
+        buff.appendString(firstFrame);
+        sock.write(buff);
+
+        buff = new Buffer();
+        buff.appendByte((byte) (0x00 | 0x80)); // Complete continuation frame
+        buff.appendByte((byte) continuationFrame.length());
+        buff.appendString(continuationFrame);
+        sock.write(buff);
+
+      }
+
+    });
+
+    server.listen(8080, "localhost", new AsyncResultHandler<HttpServer>() {
+      @Override
+      public void handle(AsyncResult<HttpServer> ar) {
+        tu.azzert(ar.succeeded());
+        client.connectWebsocket(path, version, new Handler<WebSocket>() {
+          public void handle(final WebSocket ws) {
+            ws.frameHandler(new Handler<WebSocketFrame>() {
+              boolean receivedFirstFrame = false;
+
+              @Override
+              public void handle(WebSocketFrame received) {
+                final Buffer receivedBuffer = new Buffer(received.textData());
+                if (!received.isFinalFrame()) {
+                  tu.azzert(firstFrame.equals(receivedBuffer.toString()));
+                  receivedFirstFrame = true;
+                } else if (receivedFirstFrame && received.isFinalFrame()) {
+                  tu.azzert(continuationFrame.equals(receivedBuffer.toString()));
+                  ws.close();
+                  tu.testComplete();
+                }
+              }
+            });
           }
         });
       }
@@ -270,6 +363,73 @@ public class WebsocketsTestClient extends TestClientBase {
     });
   }
 
+  private void testValidSubProtocol(final WebSocketVersion version) throws Exception {
+    final String path = "/some/path";
+    final String subProtocol = "myprotocol";
+    final Buffer buff = new Buffer("AAA");
+
+    server = vertx.createHttpServer().setWebSocketSubProtocols(subProtocol).websocketHandler(new Handler<ServerWebSocket>() {
+      public void handle(final ServerWebSocket ws) {
+        tu.azzert(path.equals(ws.path()));
+        ws.writeBinaryFrame(buff);
+      }
+    });
+    server.listen(8080, "localhost", new AsyncResultHandler<HttpServer>() {
+      @Override
+      public void handle(AsyncResult<HttpServer> ar) {
+        tu.azzert(ar.succeeded());
+        client.connectWebsocket(path, version, null, Collections.singleton(subProtocol), new Handler<WebSocket>() {
+          public void handle(final WebSocket ws) {
+            final Buffer received = new Buffer();
+            ws.dataHandler(new Handler<Buffer>() {
+              public void handle(Buffer data) {
+                received.appendBuffer(data);
+                if (received.length() == buff.length()) {
+                  tu.azzert(TestUtils.buffersEqual(buff, received));
+                  ws.close();
+                  tu.testComplete();
+                }
+              }
+            });
+          }
+        });
+      }
+    });
+  }
+
+  private void testInvalidSubProtocol(final WebSocketVersion version) throws Exception {
+    final String path = "/some/path";
+    final String subProtocol = "myprotocol";
+    final Buffer buff = new Buffer("AAA");
+
+    server = vertx.createHttpServer().setWebSocketSubProtocols("invalid").websocketHandler(new Handler<ServerWebSocket>() {
+      public void handle(final ServerWebSocket ws) {
+        tu.azzert(path.equals(ws.path()));
+        ws.writeBinaryFrame(buff);
+      }
+    });
+    server.listen(8080, "localhost", new AsyncResultHandler<HttpServer>() {
+      @Override
+      public void handle(AsyncResult<HttpServer> ar) {
+        tu.azzert(ar.succeeded());
+        client.connectWebsocket(path, version, null, Collections.singleton(subProtocol), new Handler<WebSocket>() {
+          public void handle(final WebSocket ws) {
+            final Buffer received = new Buffer();
+            ws.dataHandler(new Handler<Buffer>() {
+              public void handle(Buffer data) {
+                received.appendBuffer(data);
+                if (received.length() == buff.length()) {
+                  tu.azzert(TestUtils.buffersEqual(buff, received));
+                  ws.close();
+                  tu.testComplete();
+                }
+              }
+            });
+          }
+        });
+      }
+    });
+  }
   private void testReject(final WebSocketVersion version) throws Exception {
 
     final String path = "/some/path";

@@ -27,7 +27,7 @@ import org.vertx.java.core.MultiMap;
 import org.vertx.java.core.buffer.Buffer;
 import org.vertx.java.core.http.WebSocket;
 import org.vertx.java.core.http.WebSocketVersion;
-import org.vertx.java.core.http.impl.ws.WebSocketFrame;
+import org.vertx.java.core.http.impl.ws.WebSocketFrameInternal;
 import org.vertx.java.core.impl.DefaultContext;
 import org.vertx.java.core.impl.VertxInternal;
 import org.vertx.java.core.logging.Logger;
@@ -38,10 +38,7 @@ import org.vertx.java.core.net.impl.DefaultNetSocket;
 import org.vertx.java.core.net.impl.VertxNetHandler;
 
 import java.net.URI;
-import java.util.ArrayDeque;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Queue;
+import java.util.*;
 
 /**
  * @author <a href="http://tfox.org">Tim Fox</a>
@@ -85,6 +82,7 @@ class ClientConnection extends ConnectionBase {
                    final WebSocketVersion wsVersion,
                    final MultiMap headers,
                    int maxWebSocketFrameSize,
+                   final Set<String> subProtocols,
                    final Handler<WebSocket> wsConnect) {
     if (ws != null) {
       throw new IllegalStateException("Already websocket");
@@ -115,7 +113,20 @@ class ClientConnection extends ConnectionBase {
       } else {
         nettyHeaders = null;
       }
-      handshaker = WebSocketClientHandshakerFactory.newHandshaker(wsuri, version, null, false,
+      String wsSubProtocols = null;
+      if (subProtocols != null && !subProtocols.isEmpty()) {
+        StringBuilder sb = new StringBuilder();
+
+        Iterator<String> protocols = subProtocols.iterator();
+        while (protocols.hasNext()) {
+          sb.append(protocols.next());
+          if (protocols.hasNext()) {
+            sb.append(",");
+          }
+        }
+        wsSubProtocols = sb.toString();
+      }
+      handshaker = WebSocketClientHandshakerFactory.newHandshaker(wsuri, version, wsSubProtocols, false,
                                                                   nettyHeaders, maxWebSocketFrameSize);
       final ChannelPipeline p = channel.pipeline();
       p.addBefore("handler", "handshakeCompleter", new HandshakeInboundHandler(wsConnect));
@@ -310,7 +321,7 @@ class ClientConnection extends ConnectionBase {
     }
   }
 
-  void handleWsFrame(WebSocketFrame frame) {
+  void handleWsFrame(WebSocketFrameInternal frame) {
     if (ws != null) {
       setContext();
       ws.handleFrame(frame);
